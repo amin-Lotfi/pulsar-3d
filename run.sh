@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SECONDS_TO_RUN="${1:-0}"
-TRIGGER_HZ="${2:-30}"
+TRIGGER_HZ="${2:-60}"
 ARCH="$(uname -m)"
 
 if [[ "${FORCE_NON_ARM:-0}" != "1" && "$ARCH" != "aarch64" ]]; then

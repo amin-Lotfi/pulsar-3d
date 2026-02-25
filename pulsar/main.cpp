@@ -18,8 +18,8 @@
 namespace {
 
 constexpr uint32_t kTargetCameras = 2;
-constexpr uint32_t kAcqBufferNum = 4;
-constexpr int64_t kStreamTransferSize = 64 * 1024;
+constexpr uint32_t kAcqBufferNum = 2;
+constexpr int64_t kStreamTransferSize = 1024 * 1024;
 constexpr int64_t kStreamTransferUrb = 64;
 constexpr uint32_t kEnumTimeoutMs = 1000;
 
@@ -28,9 +28,19 @@ constexpr int kViewHeight = 1080;
 constexpr int kCanvasWidth = kViewWidth * 2;
 constexpr int kCanvasHeight = kViewHeight;
 
-constexpr uint32_t kDefaultTriggerHz = 30;
+constexpr uint32_t kDefaultTriggerHz = 60;
 constexpr uint32_t kMinTriggerHz = 1;
 constexpr uint32_t kMaxTriggerHz = 120;
+constexpr double kDefaultExposureUs = 34000.0;
+constexpr double kExposureGuardUs = 500.0;
+
+constexpr double kPresetGain = 5.0;
+constexpr double kPresetBlackLevel = 1.0;
+constexpr double kPresetBalanceRatio = 2.0;
+constexpr int64_t kPresetLightSourcePreset = 3;
+constexpr int64_t kPresetBalanceWhiteAuto = 1;
+constexpr int64_t kPresetExposureAuto = 0;
+constexpr int64_t kPresetAcquisitionFrameRateMode = 1;
 
 volatile std::sig_atomic_t g_stop_requested = 0;
 
@@ -141,6 +151,19 @@ void TrySetEnumNode(GX_PORT_HANDLE handle, const char *node_name, const char *va
     }
 }
 
+void TrySetEnumNodeByInt(GX_PORT_HANDLE handle, const char *node_name, int64_t value) {
+    GX_NODE_ACCESS_MODE mode = GX_NODE_ACCESS_MODE_NI;
+    GX_STATUS status = GXGetNodeAccessMode(handle, node_name, &mode);
+    if (status != GX_STATUS_SUCCESS || mode != GX_NODE_ACCESS_MODE_RW) {
+        return;
+    }
+    status = GXSetEnumValue(handle, node_name, value);
+    if (status != GX_STATUS_SUCCESS) {
+        std::cerr << "[WARN] Failed to set " << node_name << "=" << value << ": "
+                  << GetErrorString(status) << "\n";
+    }
+}
+
 bool SetEnumNodeStrict(GX_PORT_HANDLE handle, const char *node_name,
                        const char *value) {
     GX_STATUS status = GXSetEnumValueByString(handle, node_name, value);
@@ -167,6 +190,22 @@ int64_t FitIntToNodeRange(const GX_INT_VALUE &range, int64_t target) {
         value = range.nMin + ((value - range.nMin) / range.nInc) * range.nInc;
     }
     return std::max(range.nMin, std::min(value, range.nMax));
+}
+
+double FitFloatToNodeRange(const GX_FLOAT_VALUE &range, double target) {
+    double value = std::max(range.dMin, std::min(target, range.dMax));
+    if (range.bIncIsValid && range.dInc > 0.0) {
+        const double steps = static_cast<double>(static_cast<int64_t>(
+            (value - range.dMin) / range.dInc));
+        value = range.dMin + steps * range.dInc;
+    }
+    return std::max(range.dMin, std::min(value, range.dMax));
+}
+
+double RealtimeSafeExposureUs(uint32_t trigger_hz, double requested_exposure_us) {
+    const double frame_period_us = 1000000.0 / static_cast<double>(trigger_hz);
+    const double upper = std::max(1.0, frame_period_us - kExposureGuardUs);
+    return std::max(1.0, std::min(requested_exposure_us, upper));
 }
 
 void TrySetIntNearest(GX_PORT_HANDLE handle, const char *node_name, int64_t target) {
@@ -461,19 +500,35 @@ bool ConfigureCamera(CameraContext *ctx, uint32_t trigger_hz, double exposure_us
     TrySetIntNode(ctx->stream, "StreamTransferNumberUrb", kStreamTransferUrb);
     TrySetEnumNode(ctx->stream, "StreamBufferHandlingMode", "NewestOnly");
 
+    TrySetEnumNodeByInt(ctx->device, "ExposureAuto", kPresetExposureAuto);
     TrySetEnumNode(ctx->device, "ExposureAuto", "Off");
     TrySetEnumNode(ctx->device, "GainAuto", "Off");
+    TrySetFloatNode(ctx->device, "Gain", kPresetGain);
+    TrySetFloatNode(ctx->device, "BlackLevel", kPresetBlackLevel);
+    TrySetEnumNodeByInt(ctx->device, "LightSourcePreset", kPresetLightSourcePreset);
+    TrySetEnumNodeByInt(ctx->device, "BalanceWhiteAuto", kPresetBalanceWhiteAuto);
+    TrySetFloatNode(ctx->device, "BalanceRatio", kPresetBalanceRatio);
+
+    const double exposure_realtime_safe = RealtimeSafeExposureUs(trigger_hz, exposure_us);
+    if (exposure_realtime_safe + 0.5 < exposure_us) {
+        std::cout << "[WARN] Camera " << ctx->index << " exposure " << exposure_us
+                  << " us is too long for " << trigger_hz
+                  << " fps; clamped to " << exposure_realtime_safe
+                  << " us for low-latency.\n";
+    }
     if (NodeIsWritable(ctx->device, "ExposureTime")) {
         GX_FLOAT_VALUE exposure_range{};
         status = GXGetFloatValue(ctx->device, "ExposureTime", &exposure_range);
         if (status == GX_STATUS_SUCCESS) {
-            const double fitted = std::max(exposure_range.dMin,
-                                           std::min(exposure_us, exposure_range.dMax));
+            const double fitted =
+                FitFloatToNodeRange(exposure_range, exposure_realtime_safe);
             TrySetFloatNode(ctx->device, "ExposureTime", fitted);
         }
     }
 
     if (NodeIsWritable(ctx->device, "AcquisitionFrameRateMode")) {
+        TrySetEnumNodeByInt(ctx->device, "AcquisitionFrameRateMode",
+                            kPresetAcquisitionFrameRateMode);
         TrySetEnumNode(ctx->device, "AcquisitionFrameRateMode", "On");
     }
     if (NodeIsWritable(ctx->device, "AcquisitionFrameRate")) {
@@ -590,7 +645,7 @@ int main(int argc, char **argv) {
     const bool headless = headless_env != nullptr && std::string(headless_env) == "1";
 
     const char *exposure_env = std::getenv("PULSAR_EXPOSURE_US");
-    double exposure_us = 3000.0;
+    double exposure_us = kDefaultExposureUs;
     if (exposure_env != nullptr) {
         const double parsed = std::atof(exposure_env);
         if (parsed > 1.0) {
