@@ -1,1 +1,45 @@
+<<<<<<< HEAD
 Need at least 2 cameras, found 0
+=======
+Usage: /home/amin/Pictures/pulsar-3d/pulsar/main [options]
+
+Options:
+  --sn0 <SN>               Serial number for camera 0
+  --sn1 <SN>               Serial number for camera 1
+  --sync <mode>            free | external | master | action | scheduled (default: free)
+  --trigger-source <src>   TriggerSource line for external/master mode (default: Line1)
+  --fps <n>                Trigger FPS for action/scheduled mode (default: 30)
+  --buffers <n>            Stream buffer count (default: 2)
+  --packet-size <n>        GEV packet size, e.g. 8192 (default: 0=keep current)
+  --exposure-us <f>        Exposure time in microseconds (default: 34000)
+  --gain-db <f>            Gain in dB (default: 5)
+  --max-delta-us <n>       Max allowed timestamp delta in us (default: 2000, 0=disable)
+  --broadcast <ip>         Action command broadcast IP (default: 255.255.255.255)
+  --special-ip <ip>        Action command source IP (default: empty)
+  --action-lead-ms <n>     Lead time for scheduled action (default: 5)
+  --display-mode <mode>    dual | single (default: dual)
+  --mon0-width <n>         Monitor 0 width (default: 1920)
+  --mon0-height <n>        Monitor 0 height (default: 1080)
+  --mon0-x <n>             Monitor 0 window X position (default: 0)
+  --mon0-y <n>             Monitor 0 window Y position (default: 0)
+  --mon1-width <n>         Monitor 1 width (default: 3840)
+  --mon1-height <n>        Monitor 1 height (default: 1080)
+  --mon1-x <n>             Monitor 1 window X position (default: 1920)
+  --mon1-y <n>             Monitor 1 window Y position (default: 0)
+  --single-window          Shortcut for --display-mode single
+  --dual-window            Shortcut for --display-mode dual
+  --strict-pair            Always require both cameras to provide new frame (default: on)
+  --relaxed-pair           Allow mixed-age pairs in free mode
+  --ultra-low-latency      Favor minimum latency (default: on)
+  --balanced-latency       Favor balanced CPU/quality over minimum latency
+  --no-display             Disable GUI display
+  --verbose                Print extra diagnostics
+  --help                   Show this message
+
+Examples:
+  /home/amin/Pictures/pulsar-3d/pulsar/main
+  /home/amin/Pictures/pulsar-3d/pulsar/main --sync external --trigger-source Line2
+  /home/amin/Pictures/pulsar-3d/pulsar/main --sync master --trigger-source Line2
+  /home/amin/Pictures/pulsar-3d/pulsar/main --sync action --fps 60 --packet-size 8192
+  /home/amin/Pictures/pulsar-3d/pulsar/main --display-mode dual --mon0-width 1920 --mon1-width 3840
+>>>>>>> 23880dfe18a93e4ea0713b6e9b2044fb2ba55403
