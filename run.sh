@@ -70,14 +70,60 @@ fi
 echo "Using camera SDK: ${SDK_ROOT}"
 echo "Using camera SDK libs: ${SDK_LIB}"
 
-if [[ -f "${SDK_CONFIG_FILE}" && -z "${LOG4CPLUS_CONFIGURATION:-}" ]]; then
-  export LOG4CPLUS_CONFIGURATION="${SDK_CONFIG_FILE}"
+RUNTIME_DIR="${ROOT_DIR}/.runtime"
+RUNTIME_LOG_DIR="${RUNTIME_DIR}/logs"
+RUNTIME_CACHE_DIR="${RUNTIME_DIR}/genicam-cache"
+RUNTIME_LOG_CFG="${RUNTIME_DIR}/log4cplus.runtime.properties"
+RUNTIME_LOG_FILE="${RUNTIME_LOG_DIR}/sdk.log"
+
+mkdir -p "${RUNTIME_LOG_DIR}" "${RUNTIME_CACHE_DIR}"
+touch "${RUNTIME_LOG_FILE}" 2>/dev/null || true
+
+cat > "${RUNTIME_LOG_CFG}" <<EOF
+log4cplus.rootLogger=ERROR, FILE
+log4cplus.appender.FILE=log4cplus::RollingFileAppender
+log4cplus.appender.FILE.File=${RUNTIME_LOG_FILE}
+log4cplus.appender.FILE.CreateDirs=true
+log4cplus.appender.FILE.MaxFileSize=20MB
+log4cplus.appender.FILE.MaxBackupIndex=2
+log4cplus.appender.FILE.layout=log4cplus::PatternLayout
+log4cplus.appender.FILE.layout.ConversionPattern=%D{%Y-%m-%d %H:%M:%S:%q};%p;%t;%c;[%l];%m%n
+EOF
+
+if [[ -z "${LOG4CPLUS_CONFIGURATION:-}" ]]; then
+  export LOG4CPLUS_CONFIGURATION="${RUNTIME_LOG_CFG}"
+fi
+if [[ -z "${GENICAM_CACHE_V3_0:-}" ]]; then
+  export GENICAM_CACHE_V3_0="${RUNTIME_CACHE_DIR}"
+fi
+if [[ -z "${GENICAM_GENTL64_PATH:-}" ]]; then
+  export GENICAM_GENTL64_PATH="${SDK_LIB}"
+elif [[ ":${GENICAM_GENTL64_PATH}:" != *":${SDK_LIB}:"* ]]; then
+  export GENICAM_GENTL64_PATH="${SDK_LIB}:${GENICAM_GENTL64_PATH}"
 fi
 
 if [[ ! -f /etc/Galaxy/cfg/log4cplus.properties ]]; then
   echo "Warning: /etc/Galaxy/cfg/log4cplus.properties not found." >&2
   echo "         If camera open fails on Jetson, run installer once:" >&2
   echo "         sudo ${SDK_ROOT}/Galaxy_camera.run" >&2
+fi
+if [[ ! -d /var/log/Galaxy || ! -w /var/log/Galaxy ]]; then
+  echo "Info: /var/log/Galaxy is not writable for current user; using local SDK log file:"
+  echo "      ${RUNTIME_LOG_FILE}"
+fi
+
+if [[ "${IS_ARM64}" -eq 1 && "${PULSAR_TUNE_LIMITS:-1}" == "1" ]]; then
+  stack_soft="$(ulimit -s 2>/dev/null || true)"
+  if [[ "${stack_soft}" == "unlimited" ]]; then
+    ulimit -s 4096 2>/dev/null || true
+  elif [[ "${stack_soft}" =~ ^[0-9]+$ ]] && (( stack_soft > 4096 )); then
+    ulimit -s 4096 2>/dev/null || true
+  fi
+
+  nproc_soft="$(ulimit -u 2>/dev/null || true)"
+  if [[ "${nproc_soft}" =~ ^[0-9]+$ ]] && (( nproc_soft < 1024 )); then
+    ulimit -u 1024 2>/dev/null || true
+  fi
 fi
 
 HAVE_OPENCV=0
@@ -152,8 +198,27 @@ if [[ "${HAVE_OPENCV}" -eq 0 && "${HAS_NO_DISPLAY}" -eq 0 ]]; then
 fi
 
 if [[ "${HAS_NO_DISPLAY}" -eq 0 && -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
+  if [[ -S /tmp/.X11-unix/X0 ]]; then
+    export DISPLAY=:0
+    if [[ -z "${XAUTHORITY:-}" && -f "${HOME}/.Xauthority" ]]; then
+      export XAUTHORITY="${HOME}/.Xauthority"
+    fi
+    echo "DISPLAY was empty; trying local X server via DISPLAY=:0"
+  fi
+fi
+
+if [[ "${HAS_NO_DISPLAY}" -eq 0 && -n "${DISPLAY:-}" ]] && command -v xdpyinfo >/dev/null 2>&1; then
+  if ! xdpyinfo >/dev/null 2>&1; then
+    echo "Cannot access X display '${DISPLAY}'; running with --no-display"
+    RUN_ARGS+=(--no-display)
+    HAS_NO_DISPLAY=1
+  fi
+fi
+
+if [[ "${HAS_NO_DISPLAY}" -eq 0 && -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
   echo "No active GUI session detected (DISPLAY/WAYLAND_DISPLAY is empty); running with --no-display"
   RUN_ARGS+=(--no-display)
+  HAS_NO_DISPLAY=1
 fi
 
 if [[ "${IS_ARM64}" -eq 1 ]]; then
@@ -163,4 +228,22 @@ if [[ "${IS_ARM64}" -eq 1 ]]; then
   echo "  3) sudo ${SDK_ROOT}/SetUSBStack.sh   # for USB cameras"
 fi
 
-exec "${BIN}" "${RUN_ARGS[@]}"
+APP_STDOUT_LOG="${RUNTIME_LOG_DIR}/last-run.log"
+set +e
+"${BIN}" "${RUN_ARGS[@]}" 2>&1 | tee "${APP_STDOUT_LOG}"
+APP_STATUS=${PIPESTATUS[0]}
+set -e
+
+if [[ "${APP_STATUS}" -ne 0 ]] && grep -q "Thread creation was not successful" "${APP_STDOUT_LOG}"; then
+  echo ""
+  echo "Detected Galaxy SDK init failure: 'Thread creation was not successful'."
+  echo "Try one-time system setup on Jetson, then reboot:"
+  echo "  sudo ${SDK_ROOT}/Galaxy_camera.run"
+  echo "  sudo reboot"
+  echo ""
+  echo "If you are running from SSH and need display on the Jetson monitor:"
+  echo "  export DISPLAY=:0"
+  echo "  ./run.sh"
+fi
+
+exit "${APP_STATUS}"
