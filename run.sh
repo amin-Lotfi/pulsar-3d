@@ -3,8 +3,28 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN="${ROOT_DIR}/pulsar/main"
-SDK_INC="${ROOT_DIR}/Galaxy_camera/inc"
-SDK_LIB="${ROOT_DIR}/Galaxy_camera/lib/x86_64"
+
+TARGET_ARCH="${TARGET_ARCH:-$(uname -m)}"
+case "${TARGET_ARCH}" in
+  aarch64|arm64)
+    SDK_ROOT_DEFAULT="${ROOT_DIR}/Galaxy_camera_arm64"
+    SDK_LIB_SUBDIR_DEFAULT="armv8"
+    ;;
+  x86_64|amd64)
+    SDK_ROOT_DEFAULT="${ROOT_DIR}/Galaxy_camera_amd"
+    SDK_LIB_SUBDIR_DEFAULT="x86_64"
+    ;;
+  *)
+    echo "Error: unsupported architecture '${TARGET_ARCH}'. Set TARGET_ARCH or GALAXY_SDK_ROOT manually." >&2
+    exit 1
+    ;;
+esac
+
+SDK_ROOT="${GALAXY_SDK_ROOT:-${SDK_ROOT_DEFAULT}}"
+SDK_INC="${SDK_ROOT}/inc"
+SDK_LIB_SUBDIR="${GALAXY_SDK_LIB_SUBDIR:-${SDK_LIB_SUBDIR_DEFAULT}}"
+SDK_LIB="${SDK_ROOT}/lib/${SDK_LIB_SUBDIR}"
+SDK_CONFIG_FILE="${SDK_ROOT}/config/log4cplus.properties"
 
 SOURCES=(
   "${ROOT_DIR}/pulsar/main.cpp"
@@ -21,8 +41,24 @@ for src in "${SOURCES[@]}"; do
 done
 
 if [[ ! -d "${SDK_INC}" || ! -d "${SDK_LIB}" ]]; then
-  echo "Error: SDK paths not found under Galaxy_camera/" >&2
+  echo "Error: SDK paths not found." >&2
+  echo "  SDK include: ${SDK_INC}" >&2
+  echo "  SDK lib:     ${SDK_LIB}" >&2
+  echo "Set GALAXY_SDK_ROOT and optionally GALAXY_SDK_LIB_SUBDIR if your SDK path is different." >&2
   exit 1
+fi
+
+echo "Using camera SDK: ${SDK_ROOT}"
+echo "Using camera SDK libs: ${SDK_LIB}"
+
+if [[ -f "${SDK_CONFIG_FILE}" && -z "${LOG4CPLUS_CONFIGURATION:-}" ]]; then
+  export LOG4CPLUS_CONFIGURATION="${SDK_CONFIG_FILE}"
+fi
+
+if [[ ! -f /etc/Galaxy/cfg/log4cplus.properties ]]; then
+  echo "Warning: /etc/Galaxy/cfg/log4cplus.properties not found." >&2
+  echo "         If camera open fails on Jetson, run installer once:" >&2
+  echo "         sudo ${SDK_ROOT}/Galaxy_camera.run" >&2
 fi
 
 HAVE_OPENCV=0
@@ -73,6 +109,13 @@ done
 if [[ "${HAVE_OPENCV}" -eq 0 && "${HAS_NO_DISPLAY}" -eq 0 ]]; then
   echo "OpenCV not found; running with --no-display"
   RUN_ARGS+=(--no-display)
+fi
+
+if [[ "${TARGET_ARCH}" == "aarch64" || "${TARGET_ARCH}" == "arm64" ]]; then
+  echo "Tip (Jetson):"
+  echo "  1) sudo ${SDK_ROOT}/Galaxy_camera.run"
+  echo "  2) sudo nvpmodel -m 0 && sudo jetson_clocks"
+  echo "  3) sudo ${SDK_ROOT}/SetUSBStack.sh   # for USB cameras"
 fi
 
 exec "${BIN}" "${RUN_ARGS[@]}"
