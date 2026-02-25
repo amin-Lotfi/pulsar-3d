@@ -9,7 +9,15 @@
 #include <thread>
 #include <vector>
 
+#ifndef PULSAR_ENABLE_OPENCV
 #if __has_include(<opencv2/opencv.hpp>)
+#define PULSAR_ENABLE_OPENCV 1
+#else
+#define PULSAR_ENABLE_OPENCV 0
+#endif
+#endif
+
+#if PULSAR_ENABLE_OPENCV
 #include <opencv2/opencv.hpp>
 #define HAVE_OPENCV 1
 #else
