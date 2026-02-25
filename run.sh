@@ -24,6 +24,7 @@ SDK_ROOT="${GALAXY_SDK_ROOT:-${SDK_ROOT_DEFAULT}}"
 SDK_INC="${SDK_ROOT}/inc"
 SDK_LIB_SUBDIR="${GALAXY_SDK_LIB_SUBDIR:-${SDK_LIB_SUBDIR_DEFAULT}}"
 SDK_LIB="${SDK_ROOT}/lib/${SDK_LIB_SUBDIR}"
+SDK_CONFIG_FILE="${SDK_ROOT}/config/log4cplus.properties"
 
 SOURCES=(
   "${ROOT_DIR}/pulsar/main.cpp"
@@ -49,6 +50,16 @@ fi
 
 echo "Using camera SDK: ${SDK_ROOT}"
 echo "Using camera SDK libs: ${SDK_LIB}"
+
+if [[ -f "${SDK_CONFIG_FILE}" && -z "${LOG4CPLUS_CONFIGURATION:-}" ]]; then
+  export LOG4CPLUS_CONFIGURATION="${SDK_CONFIG_FILE}"
+fi
+
+if [[ ! -f /etc/Galaxy/cfg/log4cplus.properties ]]; then
+  echo "Warning: /etc/Galaxy/cfg/log4cplus.properties not found." >&2
+  echo "         If camera open fails on Jetson, run installer once:" >&2
+  echo "         sudo ${SDK_ROOT}/Galaxy_camera.run" >&2
+fi
 
 HAVE_OPENCV=0
 OPENCV_FLAGS=()
@@ -101,7 +112,10 @@ if [[ "${HAVE_OPENCV}" -eq 0 && "${HAS_NO_DISPLAY}" -eq 0 ]]; then
 fi
 
 if [[ "${TARGET_ARCH}" == "aarch64" || "${TARGET_ARCH}" == "arm64" ]]; then
-  echo "Tip (Jetson): run 'sudo nvpmodel -m 0 && sudo jetson_clocks' before launch for minimum latency."
+  echo "Tip (Jetson):"
+  echo "  1) sudo ${SDK_ROOT}/Galaxy_camera.run"
+  echo "  2) sudo nvpmodel -m 0 && sudo jetson_clocks"
+  echo "  3) sudo ${SDK_ROOT}/SetUSBStack.sh   # for USB cameras"
 fi
 
 exec "${BIN}" "${RUN_ARGS[@]}"
