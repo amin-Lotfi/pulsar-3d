@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cerrno>
 #include <csignal>
 #include <cstdio>
@@ -19,6 +20,45 @@ std::atomic<bool> g_run(true);
 
 void SignalHandler(int) {
     g_run.store(false, std::memory_order_relaxed);
+}
+
+const char* DeviceTypeToString(GX_DEVICE_CLASS type) {
+    switch (type) {
+        case GX_DEVICE_CLASS_USB2:
+            return "USB2";
+        case GX_DEVICE_CLASS_U3V:
+            return "U3V";
+        case GX_DEVICE_CLASS_GEV:
+            return "GEV";
+        case GX_DEVICE_CLASS_CXP:
+            return "CXP";
+        case GX_DEVICE_CLASS_SMART:
+            return "SMART";
+        default:
+            return "UNKNOWN";
+    }
+}
+
+const char* DeviceModel(const GX_DEVICE_INFO& info) {
+    switch (info.emDevType) {
+        case GX_DEVICE_CLASS_GEV:
+            return reinterpret_cast<const char*>(info.DevInfo.stGEVDevInfo.chModelName);
+        case GX_DEVICE_CLASS_U3V:
+            return reinterpret_cast<const char*>(info.DevInfo.stU3VDevInfo.chModelName);
+        case GX_DEVICE_CLASS_USB2:
+            return reinterpret_cast<const char*>(info.DevInfo.stUSBDevInfo.chModelName);
+        case GX_DEVICE_CLASS_CXP:
+            return reinterpret_cast<const char*>(info.DevInfo.stCXPDevInfo.chModelName);
+        default:
+            return "";
+    }
+}
+
+const char* NonEmptyOrDash(const char* value) {
+    if (value == nullptr || value[0] == '\0') {
+        return "-";
+    }
+    return value;
 }
 
 }  // namespace
@@ -80,15 +120,50 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    constexpr uint32_t kDiscoveryTimeoutMs = 1500;
+    constexpr int kDiscoveryRetries = 3;
+    constexpr int kRetrySleepMs = 500;
     uint32_t dev_num = 0;
-    st = GXUpdateAllDeviceList(&dev_num, 1000);
-    if (st != GX_STATUS_SUCCESS) {
-        PrintGxError("GXUpdateAllDeviceList failed", st);
-        GXCloseLib();
-        return 1;
+    for (int attempt = 1; attempt <= kDiscoveryRetries; ++attempt) {
+        st = GXUpdateAllDeviceList(&dev_num, kDiscoveryTimeoutMs);
+        if (st != GX_STATUS_SUCCESS) {
+            PrintGxError("GXUpdateAllDeviceList failed", st);
+            GXCloseLib();
+            return 1;
+        }
+        if (dev_num >= 2) {
+            break;
+        }
+        if (attempt < kDiscoveryRetries && opt.verbose) {
+            std::fprintf(stderr,
+                         "Camera discovery attempt %d/%d: found %u camera(s), retrying...\n",
+                         attempt,
+                         kDiscoveryRetries,
+                         dev_num);
+        }
+        if (attempt < kDiscoveryRetries) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(kRetrySleepMs));
+        }
     }
     if (dev_num < 2) {
         std::fprintf(stderr, "Need at least 2 cameras, found %u\n", dev_num);
+        if (dev_num > 0) {
+            std::fprintf(stderr, "Detected devices:\n");
+            for (uint32_t i = 1; i <= dev_num; ++i) {
+                GX_DEVICE_INFO info{};
+                if (GXGetDeviceInfo(i, &info) != GX_STATUS_SUCCESS) {
+                    std::fprintf(stderr, "  [%u] <failed to read info>\n", i);
+                    continue;
+                }
+                const std::string sn = GetDeviceSN(info);
+                std::fprintf(stderr,
+                             "  [%u] type=%s model=%s sn=%s\n",
+                             i,
+                             DeviceTypeToString(info.emDevType),
+                             NonEmptyOrDash(DeviceModel(info)),
+                             NonEmptyOrDash(sn.c_str()));
+            }
+        }
         GXCloseLib();
         return 1;
     }

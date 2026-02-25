@@ -3,6 +3,8 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN="${ROOT_DIR}/pulsar/main"
+PROBE_BIN="${ROOT_DIR}/pulsar/camera_probe"
+PROBE_SRC="${ROOT_DIR}/pulsar/camera_probe.cpp"
 
 TARGET_ARCH="${TARGET_ARCH:-$(uname -m)}"
 case "${TARGET_ARCH}" in
@@ -58,6 +60,10 @@ for src in "${SOURCES[@]}"; do
     exit 1
   fi
 done
+if [[ ! -f "${PROBE_SRC}" ]]; then
+  echo "Error: source file not found: ${PROBE_SRC}" >&2
+  exit 1
+fi
 
 if [[ ! -d "${SDK_INC}" || ! -d "${SDK_LIB}" ]]; then
   echo "Error: SDK paths not found." >&2
@@ -148,7 +154,16 @@ if g++ -march=native -x c++ -E /dev/null >/dev/null 2>&1; then
 fi
 
 echo "Cleaning old build ..."
-rm -f "${BIN}"
+rm -f "${BIN}" "${PROBE_BIN}"
+
+echo "Building pulsar/camera_probe ..."
+g++ "${CXX_FLAGS[@]}" \
+  "${PROBE_SRC}" \
+  -isystem "${SDK_INC}" \
+  -L"${SDK_LIB}" \
+  -Wl,-rpath,"${SDK_LIB}" \
+  -lgxiapi \
+  -o "${PROBE_BIN}"
 
 echo "Building pulsar/main ..."
 g++ "${CXX_FLAGS[@]}" \
@@ -162,6 +177,34 @@ g++ "${CXX_FLAGS[@]}" \
   -o "${BIN}"
 
 export LD_LIBRARY_PATH="${SDK_LIB}:${LD_LIBRARY_PATH:-}"
+
+if [[ "${PULSAR_SKIP_CAMERA_CHECK:-0}" != "1" ]]; then
+  MIN_CAMERAS="${PULSAR_MIN_CAMERAS:-2}"
+  DISCOVERY_TIMEOUT_MS="${PULSAR_CAM_DISCOVERY_TIMEOUT_MS:-1500}"
+  DISCOVERY_RETRIES="${PULSAR_CAM_DISCOVERY_RETRIES:-3}"
+  DISCOVERY_RETRY_SLEEP_MS="${PULSAR_CAM_DISCOVERY_RETRY_SLEEP_MS:-500}"
+  echo "Checking camera connectivity ..."
+  set +e
+  "${PROBE_BIN}" \
+    --min "${MIN_CAMERAS}" \
+    --timeout-ms "${DISCOVERY_TIMEOUT_MS}" \
+    --retries "${DISCOVERY_RETRIES}" \
+    --retry-sleep-ms "${DISCOVERY_RETRY_SLEEP_MS}" \
+    --sdk-root "${SDK_ROOT}"
+  PROBE_STATUS=$?
+  set -e
+  if [[ "${PROBE_STATUS}" -ne 0 ]]; then
+    echo ""
+    echo "Camera precheck failed. Pulsar will not start."
+    if [[ "${EUID}" -ne 0 ]]; then
+      echo "If USB cameras are visible only as root, test once with:"
+      echo "  sudo -E ./run.sh"
+    fi
+    echo "You can bypass this check once with:"
+    echo "  PULSAR_SKIP_CAMERA_CHECK=1 ./run.sh"
+    exit "${PROBE_STATUS}"
+  fi
+fi
 
 if [[ "${IS_ARM64}" -eq 1 ]]; then
   DEFAULT_RUN_ARGS=(
@@ -240,6 +283,13 @@ if [[ "${APP_STATUS}" -ne 0 ]] && grep -q "Thread creation was not successful" "
   echo "Try one-time system setup on Jetson, then reboot:"
   echo "  sudo ${SDK_ROOT}/Galaxy_camera.run"
   echo "  sudo reboot"
+  if [[ "$(uname -m)" == "aarch64" && "$(uname -r)" == 4.9* && -f /etc/security/limits.d/galaxy-limits.conf ]]; then
+    echo ""
+    echo "Linux SDK FAQ note for Jetson Nano/TX2 on kernel 4.9 (R32.2.3):"
+    echo "  if this error persists, try:"
+    echo "  sudo rm -f /etc/security/limits.d/galaxy-limits.conf"
+    echo "  sudo reboot"
+  fi
   echo ""
   echo "If you are running from SSH and need display on the Jetson monitor:"
   echo "  export DISPLAY=:0"
